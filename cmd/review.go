@@ -47,6 +47,11 @@ var reviewCmd = &cobra.Command{
 				}
 				fmt.Printf("  %s  %s-%s  %.0fh%s\n",
 					e.Ticket, e.Start.Format("15:04"), e.End.Format("15:04"), h, desc)
+				if len(e.Files) > 0 {
+					for _, f := range e.Files {
+						fmt.Printf("       📁 %s\n", f)
+					}
+				}
 			}
 
 			overlaps := findOverlaps(todayDay.Entries)
@@ -81,6 +86,11 @@ var reviewCmd = &cobra.Command{
 				}
 				fmt.Printf("  %s  %s-%s  %.0fh%s\n",
 					e.Ticket, e.Start.Format("15:04"), e.End.Format("15:04"), h, desc)
+				if len(e.Files) > 0 {
+					for _, f := range e.Files {
+						fmt.Printf("       📁 %s\n", f)
+					}
+				}
 			}
 			fmt.Printf("  Total: %.1fh\n", yesterdayDay.Total)
 		} else {
@@ -107,8 +117,12 @@ var reviewCmd = &cobra.Command{
 			elapsed := now.Sub(s.Active.Since)
 			h := int(elapsed.Hours())
 			m := int(elapsed.Minutes()) % 60
-			fmt.Printf("\n  ⏳ Sessão ativa: %s (desde %s, %dh%02dm)\n",
-				s.Active.Ticket, s.Active.Since.Format("15:04"), h, m)
+			trackStr := ""
+			if s.Active.Tracking {
+				trackStr = fmt.Sprintf(" 📁 tracking (%d arquivo(s))", len(s.Active.Files))
+			}
+			fmt.Printf("\n  ⏳ Sessão ativa: %s (desde %s, %dh%02dm)%s\n",
+				s.Active.Ticket, s.Active.Since.Format("15:04"), h, m, trackStr)
 		}
 
 		return nil

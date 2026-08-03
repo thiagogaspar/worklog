@@ -8,6 +8,7 @@ type Entry struct {
 	End       time.Time `json:"end"`
 	Minutes   int       `json:"minutes"`
 	Desc      string    `json:"desc,omitempty"`
+	Files     []string  `json:"files,omitempty"`
 }
 
 type Day struct {
@@ -23,9 +24,11 @@ type Week struct {
 }
 
 type ActiveSession struct {
-	Ticket string    `json:"ticket"`
-	Since  time.Time `json:"since"`
-	Desc   string    `json:"desc,omitempty"`
+	Ticket   string    `json:"ticket"`
+	Since    time.Time `json:"since"`
+	Desc     string    `json:"desc,omitempty"`
+	Tracking bool      `json:"tracking,omitempty"`
+	Files    []string  `json:"files,omitempty"`
 }
 
 type Store struct {

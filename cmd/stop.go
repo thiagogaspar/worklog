@@ -32,6 +32,7 @@ var stopCmd = &cobra.Command{
 
 		ticket := s.Active.Ticket
 		since := s.Active.Since
+		trackedFiles := s.Active.Files
 
 		dayIdx := store.FindOrCreateDay(s)
 		s.Week.Days[dayIdx].Entries = append(s.Week.Days[dayIdx].Entries, types.Entry{
@@ -40,6 +41,7 @@ var stopCmd = &cobra.Command{
 			End:     now,
 			Minutes: minutes,
 			Desc:    stopDesc,
+			Files:   trackedFiles,
 		})
 		s.Week.Days[dayIdx].Total += hours
 
@@ -49,7 +51,11 @@ var stopCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("⏱  %s — %.1fh (encerrado às %s)\n", ticket, hours, now.Format("15:04"))
+		fileInfo := ""
+		if len(trackedFiles) > 0 {
+			fileInfo = fmt.Sprintf(" 📁 %d arquivo(s)", len(trackedFiles))
+		}
+		fmt.Printf("⏱  %s — %.1fh (encerrado às %s)%s\n", ticket, hours, now.Format("15:04"), fileInfo)
 		return nil
 	},
 }

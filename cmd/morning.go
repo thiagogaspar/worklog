@@ -66,13 +66,25 @@ func loadYesterdayEntries(y time.Time, ys string) ([]types.Entry, float64, float
 	if ywStr == cwStr { s, err := store.Load()
 		if err != nil { return nil, 0, target }
 		target = s.Week.Planned / 5
-		for _, d := range s.Week.Days { if d.Date == ys { return d.Entries, d.Total, target } }
+		for _, d := range s.Week.Days {
+			if d.Date == ys {
+				main := mainEntries(d.Entries)
+				total := projectEntryTotal(d.Entries, mainProject)
+				return main, total, target
+			}
+		}
 		return nil, 0, target
 	}
 	w, err := store.LoadArchive(ywStr)
 	if err != nil { return nil, 0, target }
 	target = w.Planned / 5
-	for _, d := range w.Days { if d.Date == ys { return d.Entries, d.Total, target } }
+	for _, d := range w.Days {
+		if d.Date == ys {
+			main := mainEntries(d.Entries)
+			total := projectEntryTotal(d.Entries, mainProject)
+			return main, total, target
+		}
+	}
 	return nil, 0, target
 }
 

@@ -10,8 +10,9 @@ import (
 )
 
 var logFlags struct {
-	desc string
-	date string
+	desc    string
+	date    string
+	project string
 }
 
 var logCmd = &cobra.Command{
@@ -43,6 +44,12 @@ var logCmd = &cobra.Command{
 		end := start.Add(time.Duration(hours * float64(time.Hour)))
 		minutes := int(hours * 60)
 
+		// Projeto: flag -p tem prioridade; senão detecta pelo git remote.
+		project := logFlags.project
+		if project == "" {
+			project = detectProject()
+		}
+
 		targetWeek := store.WeekOf(start)
 		currentWeek := store.WeekOf(time.Now())
 
@@ -69,6 +76,7 @@ var logCmd = &cobra.Command{
 
 			w.Days[dayIdx].Entries = append(w.Days[dayIdx].Entries, types.Entry{
 				Ticket:  ticket,
+				Project: project,
 				Start:   start,
 				End:     end,
 				Minutes: minutes,
@@ -103,6 +111,7 @@ var logCmd = &cobra.Command{
 
 			s.Week.Days[dayIdx].Entries = append(s.Week.Days[dayIdx].Entries, types.Entry{
 				Ticket:  ticket,
+				Project: project,
 				Start:   start,
 				End:     end,
 				Minutes: minutes,
@@ -119,6 +128,9 @@ var logCmd = &cobra.Command{
 		if logFlags.desc != "" {
 			fmt.Printf("   → %s\n", logFlags.desc)
 		}
+		if !isMainProject(project) {
+			fmt.Printf("   → projeto: %s\n", projectLabel(project))
+		}
 		return nil
 	},
 }
@@ -126,5 +138,6 @@ var logCmd = &cobra.Command{
 func init() {
 	logCmd.Flags().StringVarP(&logFlags.desc, "desc", "d", "", "Descricao do que foi feito")
 	logCmd.Flags().StringVarP(&logFlags.date, "date", "", "", "Data (YYYY-MM-DD, padrao: hoje)")
+	logCmd.Flags().StringVarP(&logFlags.project, "project", "p", "", "Projeto (padrao: detecta via git remote)")
 	rootCmd.AddCommand(logCmd)
 }

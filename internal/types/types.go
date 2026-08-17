@@ -4,6 +4,7 @@ import "time"
 
 type Entry struct {
 	Ticket    string    `json:"ticket"`
+	Project   string    `json:"project,omitempty"` // vazio = meioemensagem
 	Start     time.Time `json:"start"`
 	End       time.Time `json:"end"`
 	Minutes   int       `json:"minutes"`
@@ -25,6 +26,7 @@ type Week struct {
 
 type ActiveSession struct {
 	Ticket   string    `json:"ticket"`
+	Project  string    `json:"project,omitempty"` // vazio = meioemensagem
 	Since    time.Time `json:"since"`
 	Desc     string    `json:"desc,omitempty"`
 	Tracking bool      `json:"tracking,omitempty"`

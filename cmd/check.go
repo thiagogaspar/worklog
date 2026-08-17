@@ -29,13 +29,14 @@ var checkCmd = &cobra.Command{
 		today := now.Format("2006-01-02")
 		yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
 
+		// Só o projeto fixo conta para a meta diária.
 		var todayTotal, yesterdayTotal float64
 		for _, d := range s.Week.Days {
 			if d.Date == today {
-				todayTotal = d.Total
+				todayTotal = projectEntryTotal(d.Entries, mainProject)
 			}
 			if d.Date == yesterday {
-				yesterdayTotal = d.Total
+				yesterdayTotal = projectEntryTotal(d.Entries, mainProject)
 			}
 		}
 
@@ -54,8 +55,13 @@ var checkCmd = &cobra.Command{
 				elapsedStr = fmt.Sprintf("%dm", m)
 			}
 
+			proj := ""
+			if !isMainProject(s.Active.Project) {
+				proj = fmt.Sprintf(" [%s]", projectLabel(s.Active.Project))
+			}
+
 			if !checkQuiet {
-				fmt.Printf("%s⏳ %s — %s ativo%s\n", yellow, s.Active.Ticket, elapsedStr, reset)
+				fmt.Printf("%s⏳ %s — %s ativo%s%s\n", yellow, s.Active.Ticket, elapsedStr, proj, reset)
 			}
 			if checkQuiet && remaining > 0 && now.Hour() >= 18 {
 				fmt.Printf("%s🔴 Hoje: %.1fh — faltam %.1fh%s\n", red, todayTotal, remaining, reset)

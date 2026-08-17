@@ -11,6 +11,7 @@ import (
 
 var startDesc string
 var startTrack bool
+var startProject string
 
 var startCmd = &cobra.Command{
 	Use:   "start <ticket>",
@@ -33,9 +34,13 @@ var startCmd = &cobra.Command{
 
 		s.Active = &types.ActiveSession{
 			Ticket:   args[0],
+			Project:  startProject,
 			Since:    time.Now(),
 			Desc:     startDesc,
 			Tracking: startTrack,
+		}
+		if startProject == "" {
+			s.Active.Project = detectProject()
 		}
 
 		if err := store.Save(s); err != nil {
@@ -47,6 +52,9 @@ var startCmd = &cobra.Command{
 			trackInfo = " 📁 tracking ativo"
 		}
 		fmt.Printf("⏱  %s — iniciado às %s%s\n", args[0], s.Active.Since.Format("15:04"), trackInfo)
+		if !isMainProject(s.Active.Project) {
+			fmt.Printf("   → projeto: %s\n", projectLabel(s.Active.Project))
+		}
 		return nil
 	},
 }
@@ -54,4 +62,5 @@ var startCmd = &cobra.Command{
 func init() {
 	startCmd.Flags().StringVarP(&startDesc, "desc", "d", "", "Descrição inicial da tarefa")
 	startCmd.Flags().BoolVarP(&startTrack, "track", "t", false, "Ativar rastreamento de arquivos alterados")
+	startCmd.Flags().StringVarP(&startProject, "project", "p", "", "Projeto (padrao: detecta via git remote)")
 }

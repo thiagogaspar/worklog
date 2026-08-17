@@ -45,8 +45,12 @@ var reviewCmd = &cobra.Command{
 				if e.Desc != "" {
 					desc = "  " + e.Desc
 				}
-				fmt.Printf("  %s  %s-%s  %.0fh%s\n",
-					e.Ticket, e.Start.Format("15:04"), e.End.Format("15:04"), h, desc)
+				proj := ""
+				if !isMainProject(e.Project) {
+					proj = fmt.Sprintf(" [%s]", projectLabel(e.Project))
+				}
+				fmt.Printf("  %s%s  %s-%s  %.0fh%s\n",
+					e.Ticket, proj, e.Start.Format("15:04"), e.End.Format("15:04"), h, desc)
 				if len(e.Files) > 0 {
 					for _, f := range e.Files {
 						fmt.Printf("       📁 %s\n", f)
@@ -64,11 +68,12 @@ var reviewCmd = &cobra.Command{
 			}
 
 			fmt.Println("  ─────────────────────────")
-			remaining := reviewDaily - todayDay.Total
+			mainToday := projectEntryTotal(todayDay.Entries, mainProject)
+			remaining := reviewDaily - mainToday
 			if remaining > 0 {
-				fmt.Printf("  Total: %.1fh de %.0fh — faltam %.1fh\n", todayDay.Total, reviewDaily, remaining)
+				fmt.Printf("  Total: %.1fh de %.0fh — faltam %.1fh\n", mainToday, reviewDaily, remaining)
 			} else {
-				fmt.Printf("  Total: %.1fh de %.0fh ✅\n", todayDay.Total, reviewDaily)
+				fmt.Printf("  Total: %.1fh de %.0fh ✅\n", mainToday, reviewDaily)
 			}
 		} else {
 			fmt.Println("  (nenhuma entrada hoje)")
@@ -84,15 +89,19 @@ var reviewCmd = &cobra.Command{
 				if e.Desc != "" {
 					desc = "  " + e.Desc
 				}
-				fmt.Printf("  %s  %s-%s  %.0fh%s\n",
-					e.Ticket, e.Start.Format("15:04"), e.End.Format("15:04"), h, desc)
+				proj := ""
+				if !isMainProject(e.Project) {
+					proj = fmt.Sprintf(" [%s]", projectLabel(e.Project))
+				}
+				fmt.Printf("  %s%s  %s-%s  %.0fh%s\n",
+					e.Ticket, proj, e.Start.Format("15:04"), e.End.Format("15:04"), h, desc)
 				if len(e.Files) > 0 {
 					for _, f := range e.Files {
 						fmt.Printf("       📁 %s\n", f)
 					}
 				}
 			}
-			fmt.Printf("  Total: %.1fh\n", yesterdayDay.Total)
+			fmt.Printf("  Total: %.1fh\n", projectEntryTotal(yesterdayDay.Entries, mainProject))
 		} else {
 			fmt.Println("  (sem registros)")
 		}
@@ -102,8 +111,13 @@ var reviewCmd = &cobra.Command{
 		fmt.Printf("  ─── Semana %s ──────────────────\n", s.Week.YearWeek[5:])
 		var weekTotal float64
 		for _, d := range s.Week.Days {
-			fmt.Printf("  %s/%s  %.1fh\n", d.Date[8:10], d.Date[5:7], d.Total)
-			weekTotal += d.Total
+			mainDay := projectEntryTotal(d.Entries, mainProject)
+			label := fmt.Sprintf("  %s/%s  %.1fh", d.Date[8:10], d.Date[5:7], mainDay)
+			if len(d.Entries) > len(mainEntries(d.Entries)) {
+				label += fmt.Sprintf("  (+%.1fh outros)", d.Total-mainDay)
+			}
+			fmt.Println(label)
+			weekTotal += mainDay
 		}
 		weekRemaining := s.Week.Planned - weekTotal
 		if weekRemaining > 0 {
@@ -121,8 +135,12 @@ var reviewCmd = &cobra.Command{
 			if s.Active.Tracking {
 				trackStr = fmt.Sprintf(" 📁 tracking (%d arquivo(s))", len(s.Active.Files))
 			}
-			fmt.Printf("\n  ⏳ Sessão ativa: %s (desde %s, %dh%02dm)%s\n",
-				s.Active.Ticket, s.Active.Since.Format("15:04"), h, m, trackStr)
+			proj := ""
+			if !isMainProject(s.Active.Project) {
+				proj = fmt.Sprintf(" [%s]", projectLabel(s.Active.Project))
+			}
+			fmt.Printf("\n  ⏳ Sessão ativa: %s%s (desde %s, %dh%02dm)%s\n",
+				s.Active.Ticket, proj, s.Active.Since.Format("15:04"), h, m, trackStr)
 		}
 
 		return nil

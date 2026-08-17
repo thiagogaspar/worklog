@@ -50,20 +50,37 @@ func printWeek(week *types.Week, active *types.ActiveSession) {
 			if e.Desc != "" {
 				desc = " — " + e.Desc
 			}
-			fmt.Printf("    • %s: %.1fh%s\n", e.Ticket, h, desc)
+			proj := ""
+			if !isMainProject(e.Project) {
+				proj = fmt.Sprintf(" [%s]", projectLabel(e.Project))
+			}
+			fmt.Printf("    • %s%s: %.1fh%s\n", e.Ticket, proj, h, desc)
 		}
 		total += d.Total
 	}
 
+	mainTotal := 0.0
+	for _, d := range week.Days {
+		mainTotal += projectEntryTotal(d.Entries, mainProject)
+	}
+
 	fmt.Printf("\n  ─────────────────\n")
-	fmt.Printf("  Total:  %.1fh de %.0fh\n", total, week.Planned)
-	if total < week.Planned {
-		fmt.Printf("  Restam: %.1fh\n", week.Planned-total)
+	if mainTotal < week.Planned {
+		fmt.Printf("  Total (meioemensagem):  %.1fh de %.0fh\n", mainTotal, week.Planned)
+		fmt.Printf("  Restam: %.1fh\n", week.Planned-mainTotal)
 	} else {
-		fmt.Printf("  Excedente: %.1fh\n", total-week.Planned)
+		fmt.Printf("  Total (meioemensagem):  %.1fh de %.0fh\n", mainTotal, week.Planned)
+		fmt.Printf("  Excedente: %.1fh\n", mainTotal-week.Planned)
+	}
+	if total-mainTotal > 0 {
+		fmt.Printf("  Outros projetos: %.1fh\n", total-mainTotal)
 	}
 
 	if active != nil {
-		fmt.Printf("\n  ⏳ Sessão ativa: %s (desde %s)\n", active.Ticket, active.Since.Format("15:04"))
+		proj := ""
+		if !isMainProject(active.Project) {
+			proj = fmt.Sprintf(" [%s]", projectLabel(active.Project))
+		}
+		fmt.Printf("\n  ⏳ Sessão ativa: %s%s (desde %s)\n", active.Ticket, proj, active.Since.Format("15:04"))
 	}
 }

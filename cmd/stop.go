@@ -31,19 +31,29 @@ var stopCmd = &cobra.Command{
 
 		now := time.Now()
 		elapsed := int(now.Sub(s.Active.Since).Minutes())
-		// Sessões são sempre de 8h: se ficou aberta do dia anterior (ou mais),
-		// o stop registra no máximo 8h — não o tempo real decorrido.
-		minutes := int(math.Min(float64(elapsed), maxSessionMinutes))
+		// Sessões do projeto fixo são sempre de 8h: se ficou aberta do dia
+		// anterior (ou mais), o stop registra no máximo 8h. Outros projetos
+		// registram o tempo real decorrido (controle local pontual).
+		minutes := elapsed
+		capped := ""
+		if isMainProject(s.Active.Project) {
+			minutes = int(math.Min(float64(elapsed), maxSessionMinutes))
+			if minutes == maxSessionMinutes && elapsed > maxSessionMinutes {
+				capped = " (cap 8h)"
+			}
+		}
 
 		ticket := s.Active.Ticket
 		since := s.Active.Since
 		trackedFiles := s.Active.Files
+		project := s.Active.Project
 
 		// Entrada cai no dia em que a sessão começou (ex.: sessão de ontem
 		// parada hoje registra em ontem, com 8h).
 		dayIdx := store.FindOrCreateDayAt(s, since)
 		s.Week.Days[dayIdx].Entries = append(s.Week.Days[dayIdx].Entries, types.Entry{
 			Ticket:  ticket,
+			Project: project,
 			Start:   since,
 			End:     since.Add(time.Duration(minutes) * time.Minute),
 			Minutes: minutes,
@@ -62,11 +72,11 @@ var stopCmd = &cobra.Command{
 		if len(trackedFiles) > 0 {
 			fileInfo = fmt.Sprintf(" 📁 %d arquivo(s)", len(trackedFiles))
 		}
-		capped := ""
-		if minutes == maxSessionMinutes && elapsed > maxSessionMinutes {
-			capped = " (cap 8h)"
+		projInfo := ""
+		if !isMainProject(project) {
+			projInfo = fmt.Sprintf(" [%s]", projectLabel(project))
 		}
-		fmt.Printf("⏱  %s — %.1fh (encerrado às %s)%s%s\n", ticket, float64(minutes)/60, now.Format("15:04"), capped, fileInfo)
+		fmt.Printf("⏱  %s — %.1fh (encerrado às %s)%s%s%s\n", ticket, float64(minutes)/60, now.Format("15:04"), projInfo, capped, fileInfo)
 		return nil
 	},
 }

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"worklog/internal/holidays"
 	"worklog/internal/types"
 )
 
@@ -51,7 +52,7 @@ func Load() (*types.Store, error) {
 	s := &types.Store{
 		Week: types.Week{
 			YearWeek: currentYearWeek(),
-			Planned:  40,
+			Planned:  holidays.PlannedHoursForWeek(time.Now()),
 		},
 	}
 
@@ -73,7 +74,7 @@ func Load() (*types.Store, error) {
 		active := s.Active // preserva sessão ativa cross-week
 		s.Week = types.Week{
 			YearWeek: currentYearWeek(),
-			Planned:  40,
+			Planned:  holidays.PlannedHoursForWeek(time.Now()),
 		}
 		s.Active = active
 	}

@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,7 +23,17 @@ import (
 
 const gestaoBase = "https://gestao.antfarmpartners.com"
 
-var sf = struct{ date string; login, dry bool; days int }{}
+var sf = struct {
+	date     string
+	login    bool
+	dry      bool
+	check    bool
+	all      bool
+	activity string
+	days     int
+}{
+	activity: "1343",
+}
 
 var syncCmd = &cobra.Command{Use: "sync", Short: "Sincronizar com sistemas externos"}
 var gestaoCmd = &cobra.Command{Use: "gestao", Short: "→ Antfarm Partners", RunE: runGestao}
@@ -31,6 +43,9 @@ func init() {
 	syncCmd.PersistentFlags().StringVarP(&sf.date, "date", "d", "", "Data YYYY-MM-DD (padrao: hoje)")
 	syncCmd.PersistentFlags().BoolVar(&sf.login, "login", false, "Login antes de sincronizar")
 	syncCmd.PersistentFlags().BoolVar(&sf.dry, "dry-run", false, "Apenas preview")
+	syncCmd.PersistentFlags().BoolVar(&sf.check, "check", false, "Gestão: mostrar dia mais recente lançado na atividade")
+	syncCmd.PersistentFlags().BoolVar(&sf.all, "all", false, "Gestão --check: listar todos os dias lançados")
+	syncCmd.PersistentFlags().StringVar(&sf.activity, "activity", "1343", "Gestão: ID da atividade (padrao: MMID 1343)")
 	syncCmd.PersistentFlags().IntVar(&sf.days, "days", 0, "Ultimos N dias")
 	syncCmd.AddCommand(gestaoCmd, movideskCmd)
 	rootCmd.AddCommand(syncCmd)
@@ -46,6 +61,55 @@ func syncDates() []string {
 	return []string{time.Now().Format("2006-01-02")}
 }
 
+// entry é uma entrada agregada de qualquer semana (atual ou arquivada).
+type entry struct {
+	d, t        string
+	start, end  string
+	h           float64
+	desc        string
+}
+
+// collectEntries reúne as entries das datas pedidas, buscando na semana atual
+// (week.json) e nos archives de semanas anteriores — o sync não fica preso à
+// semana corrente.
+func collectEntries(dates []string) []entry {
+	want := map[string]bool{}
+	for _, d := range dates { want[d] = true }
+
+	// Semana atual
+	s, _ := store.Load()
+	var out []entry
+	for _, d := range s.Week.Days {
+		if !want[d.Date] { continue }
+		for _, e := range d.Entries {
+			out = append(out, entry{d.Date, e.Ticket, e.Start.Format("15:04"), e.End.Format("15:04"), float64(e.Minutes) / 60, e.Desc})
+		}
+	}
+
+	// Semanas anteriores (archive): agrupa datas por YYYY-Www para carregar
+	// cada arquivo uma única vez.
+	weeks := map[string][]string{}
+	for _, d := range dates {
+		dt, err := time.Parse("2006-01-02", d)
+		if err != nil { continue }
+		w := store.WeekOf(dt)
+		if w == s.Week.YearWeek { continue } // já coberto acima
+		weeks[w] = append(weeks[w], d)
+	}
+	for wk, ds := range weeks {
+		arch, err := store.LoadArchive(wk)
+		if err != nil { continue } // semana sem archive
+		for _, d := range arch.Days {
+			if !want[d.Date] { continue }
+			for _, e := range d.Entries {
+				out = append(out, entry{d.Date, e.Ticket, e.Start.Format("15:04"), e.End.Format("15:04"), float64(e.Minutes) / 60, e.Desc})
+			}
+		}
+		_ = ds
+	}
+	return out
+}
+
 func runGestao(_ *cobra.Command, _ []string) error {
 	if sf.login { if err := gestaoLogin(); err != nil { return err } }
 	if _, err := os.Stat("/tmp/gestao_cookies.txt"); os.IsNotExist(err) {
@@ -53,23 +117,39 @@ func runGestao(_ *cobra.Command, _ []string) error {
 	}
 	cl, err := cookieClient()
 	if err != nil { return err }
-	s, _ := store.Load()
-	ds := syncDates()
 
-	se := map[string]bool{}
-	for _, d := range ds { se[d] = true }
-
-	var entries []struct{ d string; t string; start, end string; h float64; desc string }
-	for _, d := range s.Week.Days {
-		if !se[d.Date] { continue }
-		for _, e := range d.Entries {
-			entries = append(entries, struct{ d string; t string; start, end string; h float64; desc string }{
-				d.Date, e.Ticket, e.Start.Format("15:04"), e.End.Format("15:04"), float64(e.Minutes) / 60, e.Desc,
-			})
-		}
+	if sf.check {
+		return gestaoCheck(cl)
 	}
-	if len(entries) == 0 { fmt.Println("Nada a sincronizar"); return nil }
 
+	// Datas alvo: flags explícitas (--date/--days) têm prioridade; senão usa as
+	// últimas 2 semanas úteis (segunda a sexta) como padrão.
+	var target []string
+	if sf.days > 0 || sf.date != "" {
+		target = syncDates()
+	} else {
+		target = lastWorkWeeks(2)
+	}
+
+	// Consulta o Gestão para saber quais dias já estão lançados no período.
+	lancados, err := gestaoLancados(cl, target)
+	if err != nil { return err }
+
+	// Dias que faltam (não lançados no Gestão).
+	var faltando []string
+	for _, d := range target {
+		if !lancados[d] { faltando = append(faltando, d) }
+	}
+
+	if len(faltando) == 0 {
+		fmt.Println("✅ Todos os dias do período já estão lançados no Gestão")
+		return nil
+	}
+
+	entries := collectEntries(faltando)
+	if len(entries) == 0 { fmt.Println("Nada a sincronizar (sem registros locais para os dias faltantes)"); return nil }
+
+	fmt.Printf("📋 %d dia(s) faltando, %d entrada(s) local(is)\n", len(faltando), len(entries))
 	n := 0
 	for _, e := range entries {
 		dt, _ := time.Parse("2006-01-02", e.d)
@@ -95,19 +175,162 @@ func runGestao(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
+// lastWorkWeeks retorna os dias úteis (segunda a sexta) das últimas n semanas,
+// incluindo a semana atual até hoje. Ex.: lastWorkWeeks(2) → semana atual + anterior.
+func lastWorkWeeks(n int) []string {
+	now := time.Now()
+	var out []string
+	cur := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	// fim = hoje; se hoje for fim de semana, usa a sexta-feira da semana atual
+	fim := cur
+	switch fim.Weekday() {
+	case time.Saturday: fim = fim.AddDate(0, 0, -1)
+	case time.Sunday: fim = fim.AddDate(0, 0, -2)
+	}
+	// volta até segunda-feira da semana atual
+	for cur.Weekday() != time.Monday { cur = cur.AddDate(0, 0, -1) }
+	start := cur.AddDate(0, 0, -7*(n-1))
+	for d := start; !d.After(fim); d = d.AddDate(0, 0, 1) {
+		if d.Weekday() == time.Saturday || d.Weekday() == time.Sunday { continue }
+		out = append(out, d.Format("2006-01-02"))
+	}
+	return out
+}
+
+// gestaoLancados pagina a atividade no Gestão e retorna o conjunto de datas já
+// lançadas dentro do período alvo. Cada página mostra 10 lançamentos (mais
+// recentes primeiro); para o período de 2 semanas bastam as primeiras páginas.
+func gestaoLancados(cl *http.Client, target []string) (map[string]bool, error) {
+	if len(target) == 0 { return map[string]bool{}, nil }
+	minDate, _ := time.Parse("2006-01-02", target[0]) // datas vêm ordenadas (mais antiga primeiro)
+	lancados := map[string]bool{}
+
+	// Extrai a data do primeiro lançamento (o mais recente) de cada página.
+	pageDate := func(html string) (time.Time, bool) {
+		re := regexp.MustCompile(`<td>(\d{2}/\d{2}/\d{4}) \d{2}:\d{2}:\d{2}</td>`)
+		if m := re.FindStringSubmatch(html); m != nil {
+			t, err := time.Parse("02/01/2006", m[1])
+			return t, err == nil
+		}
+		return time.Time{}, false
+	}
+
+	for p := 1; p <= 200; p++ {
+		u := fmt.Sprintf("%s/my-activities/detail?id=%s&hours=true&paged=%d", gestaoBase, sf.activity, p)
+		resp, err := cl.Get(u)
+		if err != nil { return nil, fmt.Errorf("página %d: %w", p, err) }
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		html := string(body)
+
+		if strings.Contains(html, "<title>Login</title>") {
+			return nil, fmt.Errorf("sessão expirada. Use --login")
+		}
+
+		first, ok := pageDate(html)
+		if !ok {
+			break // página sem lançamentos → fim
+		}
+		// Se o lançamento mais recente desta página já é mais antigo que o
+		// período alvo, não há mais nada a coletar.
+		if first.Before(minDate) { break }
+
+		re := regexp.MustCompile(`<td>(\d{2}/\d{2}/\d{4}) \d{2}:\d{2}:\d{2}</td>`)
+		for _, m := range re.FindAllStringSubmatch(html, -1) {
+			if _, ok := lancados[m[1]]; ok { continue }
+			t, err := time.Parse("02/01/2006", m[1])
+			if err != nil { continue }
+			if t.Before(minDate) { continue }
+			lancados[t.Format("2006-01-02")] = true
+		}
+	}
+	return lancados, nil
+}
+
+// gestaoCheck consulta a página da atividade no Gestão. Por padrão mostra o dia
+// mais recente lançado; com --all lista todos os dias encontrados.
+func gestaoCheck(cl *http.Client) error {
+	url := fmt.Sprintf("%s/my-activities/detail?id=%s&hours=true", gestaoBase, sf.activity)
+	resp, err := cl.Get(url)
+	if err != nil { return fmt.Errorf("consulta Gestão: %w", err) }
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("consulta Gestão: HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil { return fmt.Errorf("lendo resposta: %w", err) }
+
+	html := string(body)
+	if strings.Contains(html, "<title>Login</title>") {
+		return fmt.Errorf("sessão expirada. Use --login")
+	}
+
+	// Extrai datas dd/mm/yyyy presentes na página (lançamentos)
+	re := regexp.MustCompile(`\b(0[1-9]|[12][0-9]|3[01])/(0[1-9]|1[0-2])/(20\d{2})\b`)
+	seen := map[string]bool{}
+	var dates []string
+	for _, m := range re.FindAllString(html, -1) {
+		if seen[m] { continue }
+		seen[m] = true
+		dates = append(dates, m)
+	}
+
+	if len(dates) == 0 {
+		fmt.Printf("Atividade %s: nenhum lançamento encontrado na página (ou HTML sem datas reconhecíveis)\n", sf.activity)
+		return nil
+	}
+
+	sort.Slice(dates, func(i, j int) bool {
+		a, _ := time.Parse("02/01/2006", dates[i])
+		b, _ := time.Parse("02/01/2006", dates[j])
+		return a.Before(b)
+	})
+
+	last, _ := time.Parse("02/01/2006", dates[len(dates)-1])
+	first, _ := time.Parse("02/01/2006", dates[0])
+
+	fmt.Printf("Atividade %s — %d dias lançados\n", sf.activity, len(dates))
+	fmt.Printf("Mais recente: %s (%s)\n", dates[len(dates)-1], relDays(last))
+
+	if sf.all {
+		fmt.Printf("Primeiro:     %s (%s)\n", dates[0], relDays(first))
+		fmt.Println("── Todos os lançamentos (mais recentes primeiro) ──")
+		for i := len(dates) - 1; i >= 0; i-- {
+			fmt.Printf("  %s\n", dates[i])
+		}
+	}
+
+	// Alerta se já cobre até hoje
+	today := time.Now().Truncate(24 * time.Hour)
+	if last.Equal(today) {
+		fmt.Println("✅ Já está lançado até hoje")
+	} else {
+		fmt.Printf("⚠️ Último lançamento: %s (faltam dias)\n", dates[len(dates)-1])
+	}
+	return nil
+}
+
+// relDays descreve uma data em relação a hoje ("hoje", "ontem", "há N dias").
+func relDays(t time.Time) string {
+	today := time.Now().Truncate(24 * time.Hour)
+	t = t.Truncate(24 * time.Hour)
+	d := int(today.Sub(t).Hours() / 24)
+	switch {
+	case d == 0: return "hoje"
+	case d == 1: return "ontem"
+	case d > 1:  return fmt.Sprintf("há %d dias", d)
+	default:     return fmt.Sprintf("em %d dias", -d)
+	}
+}
+
 func runMovidesk(_ *cobra.Command, _ []string) error {
-	s, _ := store.Load()
-	ds := syncDates(); se := map[string]bool{}
-	for _, d := range ds { se[d] = true }
 	home, _ := os.UserHomeDir(); bin := home + "/.local/bin/movidesk"
 	var entries []struct{ d, t string; h float64 }
-	for _, d := range s.Week.Days {
-		if !se[d.Date] { continue }
-		for _, e := range d.Entries {
-			entries = append(entries, struct{ d, t string; h float64 }{
-				d.Date, strings.TrimPrefix(e.Ticket, "#"), float64(e.Minutes) / 60,
-			})
-		}
+	for _, e := range collectEntries(syncDates()) {
+		entries = append(entries, struct{ d, t string; h float64 }{
+			e.d, strings.TrimPrefix(e.t, "#"), e.h,
+		})
 	}
 	if len(entries) == 0 { fmt.Println("Nada a sincronizar"); return nil }
 	n := 0

@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -88,24 +90,30 @@ func loadYesterdayEntries(y time.Time, ys string) ([]types.Entry, float64, float
 	return nil, 0, target
 }
 
+// milvusChamado é o subconjunto de campos que nos interessa do JSON
+// devolvido por `milvus ticket list -f json` (internal/types.Chamado no
+// repo do milvus-cli).
+type milvusChamado struct {
+	Codigo  int    `json:"codigo"`
+	Assunto string `json:"assunto"`
+	Status  string `json:"status"`
+}
+
 func fetchOpenTickets() [][3]string {
-	out, err := exec.Command("movidesk", "ticket", "list").Output()
+	out, err := exec.Command("milvus", "ticket", "list", "-f", "json").Output()
 	if err != nil { return nil }
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var chamados []milvusChamado
+	if err := json.Unmarshal(out, &chamados); err != nil { return nil }
+
 	var r [][3]string
-	skip := map[string]bool{"Resolvido": true, "Cancelado": true}
-	for _, l := range lines {
-		l = strings.TrimSpace(l)
-		if l == "" || strings.HasPrefix(l, "ID") || strings.HasPrefix(l, "---") { continue }
-		p := splitTable(l)
-		if len(p) < 5 { continue }
-		id, subj, st := p[0], p[1], p[len(p)-4]
-		if skip[st] { continue }
-		r = append(r, [3]string{id, subj, st})
+	skip := map[string]bool{"Finalizado": true, "Cancelado": true}
+	for _, c := range chamados {
+		if skip[c.Status] { continue }
+		r = append(r, [3]string{strconv.Itoa(c.Codigo), c.Assunto, c.Status})
 	}
 	if len(r) > 0 {
 		fmt.Printf("🎫 Tickets abertos (%d)\n", len(r))
-		icons := map[string]string{"Em atendimento": "⏳", "Aguardando Resposta": "✉", "Em Pausa": "⏸", "Em análise": "🔍"}
+		icons := map[string]string{"Atendendo": "⏳", "Pausado": "⏸", "A fazer": "•"}
 		for _, t := range r {
 			ic := "•"
 			if v, ok := icons[t[2]]; ok { ic = v }
@@ -113,23 +121,6 @@ func fetchOpenTickets() [][3]string {
 		}
 		fmt.Println()
 	}
-	return r
-}
-
-func splitTable(line string) []string {
-	var r []string
-	prevSpace := false
-	cur := strings.Builder{}
-	for _, c := range line {
-		if c == ' ' {
-			if !prevSpace { prevSpace = true }
-			continue
-		}
-		if prevSpace && cur.Len() > 0 { r = append(r, cur.String()); cur.Reset() }
-		prevSpace = false
-		cur.WriteRune(c)
-	}
-	if cur.Len() > 0 { r = append(r, cur.String()) }
 	return r
 }
 

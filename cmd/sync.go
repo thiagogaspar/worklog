@@ -37,7 +37,7 @@ var sf = struct {
 
 var syncCmd = &cobra.Command{Use: "sync", Short: "Sincronizar com sistemas externos"}
 var gestaoCmd = &cobra.Command{Use: "gestao", Short: "→ Antfarm Partners", RunE: runGestao}
-var movideskCmd = &cobra.Command{Use: "movidesk", Short: "→ Movidesk", RunE: runMovidesk}
+var milvusCmd = &cobra.Command{Use: "milvus", Short: "→ Milvus", RunE: runMilvus}
 
 func init() {
 	syncCmd.PersistentFlags().StringVarP(&sf.date, "date", "d", "", "Data YYYY-MM-DD (padrao: hoje)")
@@ -47,7 +47,7 @@ func init() {
 	syncCmd.PersistentFlags().BoolVar(&sf.all, "all", false, "Gestão --check: listar todos os dias lançados")
 	syncCmd.PersistentFlags().StringVar(&sf.activity, "activity", "1343", "Gestão: ID da atividade (padrao: MMID 1343)")
 	syncCmd.PersistentFlags().IntVar(&sf.days, "days", 0, "Ultimos N dias")
-	syncCmd.AddCommand(gestaoCmd, movideskCmd)
+	syncCmd.AddCommand(gestaoCmd, milvusCmd)
 	rootCmd.AddCommand(syncCmd)
 }
 
@@ -324,25 +324,43 @@ func relDays(t time.Time) string {
 	}
 }
 
-func runMovidesk(_ *cobra.Command, _ []string) error {
-	home, _ := os.UserHomeDir(); bin := home + "/.local/bin/movidesk"
-	var entries []struct{ d, t string; h float64 }
+// runMilvus sincroniza apontamentos de horas do worklog para o Milvus.
+// A API do Milvus não aceita data/período no lançamento (entra sempre na
+// data de envio) — por isso só entradas de HOJE são enviadas; entradas
+// mais antigas são listadas para lançamento manual no painel.
+func runMilvus(_ *cobra.Command, _ []string) error {
+	home, _ := os.UserHomeDir(); bin := home + "/.local/bin/milvus"
+	today := time.Now().Format("2006-01-02")
+
+	type milvusEntry struct {
+		d, t, desc string
+		h          float64
+	}
+	var entries []milvusEntry
 	for _, e := range collectEntries(syncDates()) {
-		entries = append(entries, struct{ d, t string; h float64 }{
-			e.d, strings.TrimPrefix(e.t, "#"), e.h,
-		})
+		desc := strings.TrimSpace(e.desc)
+		if desc == "" { desc = "Atendimento" }
+		entries = append(entries, milvusEntry{e.d, strings.TrimPrefix(e.t, "#"), desc, e.h})
 	}
 	if len(entries) == 0 { fmt.Println("Nada a sincronizar"); return nil }
-	n := 0
+
+	n, manual := 0, 0
 	for _, e := range entries {
+		if e.d != today {
+			fmt.Printf("  📋 %s %.1fh (%s) → lançar manualmente no painel (%s)\n", e.t, e.h, e.desc, e.d)
+			manual++
+			continue
+		}
 		st := "✅"; if sf.dry { st = "⏭" }
-		fmt.Printf("  %s %s %.1fh → Movidesk (%s)\n", st, e.t, e.h, e.d[5:])
+		fmt.Printf("  %s %s %.1fh → Milvus (%s)\n", st, e.t, e.h, e.desc)
 		if sf.dry { n++; continue }
-		out, err := exec.Command(bin, "ticket", "time", e.t, "-H", fmt.Sprintf("%.1f", e.h), "-d", e.d, "-y").CombinedOutput()
+		out, err := exec.Command(bin, "ticket", "time", e.t, "-H", fmt.Sprintf("%.2f", e.h), "-m", e.desc, "-y").CombinedOutput()
 		if err != nil { fmt.Printf("    ⚠️ %s\n", strings.TrimSpace(string(out))); continue }
 		n++
 	}
-	if sf.dry { fmt.Printf("⏭ %d (dry-run)\n", n) } else { fmt.Printf("✅ %d ok\n", n) }
+	if sf.dry { fmt.Printf("⏭ %d hoje (dry-run)", n) } else { fmt.Printf("✅ %d ok", n) }
+	if manual > 0 { fmt.Printf("  ·  📋 %d retroativo(s) para lançar manualmente", manual) }
+	fmt.Println()
 	return nil
 }
 

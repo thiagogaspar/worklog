@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -324,41 +325,109 @@ func relDays(t time.Time) string {
 	}
 }
 
+// milvusLancadoHoje devolve os minutos já apontados HOJE no chamado, lidos do
+// próprio Milvus (qualquer origem: este sync, `milvus ticket time`, painel).
+func milvusLancadoHoje(bin, ticket, today string) (int, error) {
+	c := exec.Command(bin, "ticket", "show", ticket, "-f", "json", "--fields", "horas")
+	c.Env = append(os.Environ(), "MILVUS_READONLY=1")
+	var stderr bytes.Buffer
+	c.Stderr = &stderr
+	out, err := c.Output()
+	if err != nil { return 0, fmt.Errorf("%s", strings.TrimSpace(stderr.String())) }
+	var r struct {
+		Atendimentos []struct {
+			DataInicial string `json:"data_inicial"`
+			Total       string `json:"total_horas_atendimento"`
+		} `json:"atendimentos"`
+	}
+	if err := json.Unmarshal(out, &r); err != nil { return 0, fmt.Errorf("resposta ilegível do milvus: %v", err) }
+	min := 0
+	for _, a := range r.Atendimentos {
+		if !strings.HasPrefix(a.DataInicial, today) { continue }
+		hm := strings.SplitN(a.Total, ":", 2)
+		if len(hm) != 2 { return 0, fmt.Errorf("total de horas inesperado: %q", a.Total) }
+		h, e1 := strconv.Atoi(hm[0]); m, e2 := strconv.Atoi(hm[1])
+		if e1 != nil || e2 != nil { return 0, fmt.Errorf("total de horas inesperado: %q", a.Total) }
+		min += h*60 + m
+	}
+	return min, nil
+}
+
 // runMilvus sincroniza apontamentos de horas do worklog para o Milvus.
 // A API do Milvus não aceita data/período no lançamento (entra sempre na
 // data de envio) — por isso só entradas de HOJE são enviadas; entradas
 // mais antigas são listadas para lançamento manual no painel.
+//
+// Nunca duplica: antes de enviar, lê do Milvus o que já foi apontado hoje em
+// cada chamado e envia só a diferença. Se a leitura falhar, não envia nada
+// daquele chamado.
 func runMilvus(_ *cobra.Command, _ []string) error {
 	home, _ := os.UserHomeDir(); bin := home + "/.local/bin/milvus"
 	today := time.Now().Format("2006-01-02")
 
 	type milvusEntry struct {
 		d, t, desc string
-		h          float64
+		min        int
 	}
 	var entries []milvusEntry
 	for _, e := range collectEntries(syncDates()) {
 		desc := strings.TrimSpace(e.desc)
 		if desc == "" { desc = "Atendimento" }
-		entries = append(entries, milvusEntry{e.d, strings.TrimPrefix(e.t, "#"), desc, e.h})
+		entries = append(entries, milvusEntry{e.d, strings.TrimPrefix(e.t, "#"), desc, int(e.h*60 + 0.5)})
 	}
 	if len(entries) == 0 { fmt.Println("Nada a sincronizar"); return nil }
 
-	n, manual := 0, 0
+	// coberto[t] = minutos já no Milvus hoje ainda não abatidos; bloqueado[t] = leitura falhou.
+	coberto, bloqueado := map[string]int{}, map[string]bool{}
+	lido := map[string]bool{}
+
+	n, manual, pulados, falhas := 0, 0, 0, 0
 	for _, e := range entries {
+		hs := float64(e.min) / 60
 		if e.d != today {
-			fmt.Printf("  📋 %s %.1fh (%s) → lançar manualmente no painel (%s)\n", e.t, e.h, e.desc, e.d)
+			fmt.Printf("  📋 %s %.1fh (%s) → lançar manualmente no painel (%s)\n", e.t, hs, e.desc, e.d)
 			manual++
 			continue
 		}
+		if !lido[e.t] {
+			lido[e.t] = true
+			m, err := milvusLancadoHoje(bin, e.t, today)
+			if err != nil {
+				bloqueado[e.t] = true
+				fmt.Printf("  ⚠️ %s: não consegui ler as horas já lançadas (%v) — nada enviado para este chamado\n", e.t, err)
+			}
+			coberto[e.t] = m
+		}
+		if bloqueado[e.t] { falhas++; continue }
+
+		enviar := e.min
+		if c := coberto[e.t]; c > 0 {
+			if c >= e.min {
+				coberto[e.t] -= e.min
+				fmt.Printf("  ⏩ %s %.1fh já está no Milvus hoje — pulado (%s)\n", e.t, hs, e.desc)
+				pulados++
+				continue
+			}
+			enviar = e.min - c
+			coberto[e.t] = 0
+			fmt.Printf("  ↪ %s: %.2fh de %.2fh já estão no Milvus — enviando só a diferença\n", e.t, float64(c)/60, hs)
+		}
+
 		st := "✅"; if sf.dry { st = "⏭" }
-		fmt.Printf("  %s %s %.1fh → Milvus (%s)\n", st, e.t, e.h, e.desc)
+		fmt.Printf("  %s %s %.2fh → Milvus (%s)\n", st, e.t, float64(enviar)/60, e.desc)
 		if sf.dry { n++; continue }
-		out, err := exec.Command(bin, "ticket", "time", e.t, "-H", fmt.Sprintf("%.2f", e.h), "-m", e.desc, "-y").CombinedOutput()
-		if err != nil { fmt.Printf("    ⚠️ %s\n", strings.TrimSpace(string(out))); continue }
+		out, err := exec.Command(bin, "ticket", "time", e.t, "-H", fmt.Sprintf("%.2f", float64(enviar)/60), "-m", e.desc, "-y").CombinedOutput()
+		if err != nil {
+			// Escrita com erro pode ter sido gravada: não tentar mais nada neste chamado nesta execução.
+			bloqueado[e.t] = true; falhas++
+			fmt.Printf("    ⚠️ %s\n", strings.TrimSpace(string(out)))
+			continue
+		}
 		n++
 	}
-	if sf.dry { fmt.Printf("⏭ %d hoje (dry-run)", n) } else { fmt.Printf("✅ %d ok", n) }
+	if sf.dry { fmt.Printf("⏭ %d a enviar (dry-run)", n) } else { fmt.Printf("✅ %d ok", n) }
+	if pulados > 0 { fmt.Printf("  ·  ⏩ %d já lançado(s)", pulados) }
+	if falhas > 0 { fmt.Printf("  ·  ⚠️ %d não enviado(s)", falhas) }
 	if manual > 0 { fmt.Printf("  ·  📋 %d retroativo(s) para lançar manualmente", manual) }
 	fmt.Println()
 	return nil

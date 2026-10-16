@@ -29,7 +29,7 @@ func detectProject() string {
 		return mainProject
 	}
 	// Repos do projeto fixo → normaliza para meioemensagem.
-	if base == "meioemensagem" || base == "www.meioemensagem.com.br" || base == "local.meioemensagem.com.br" {
+	if base == "meioemensagem" || base == "www.meioemensagem.com.br" || base == "local.meioemensagem.com.br" || base == "theme_meioemensagem" {
 		return mainProject
 	}
 	return base
